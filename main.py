@@ -1,9 +1,11 @@
 import numpy as np
 import soundcard as sc
 import pygame
+import pygame.freetype
 import sys
 import threading
 import warnings
+import buttons
 
 # Suppress SoundCard data discontinuity warnings
 try:
@@ -24,7 +26,11 @@ SAMPLE_RATE = 48000
 class Visualizer:
     def __init__(self):
         pygame.init()
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        # Initialize freetype for the buttons library
+        pygame.freetype.init()
+        self.width, self.height = WIDTH, HEIGHT
+        self.fullscreen = False
+        self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
         pygame.display.set_caption("SoundCard Loopback Visualizer")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Arial", 16)
@@ -38,9 +44,129 @@ class Visualizer:
         self.stop_event = threading.Event()
         self.audio_thread = None
         
+        # UI State
+        self.state = "VISUALIZER" # "VISUALIZER" or "MENU"
+        self.menu_buttons = []
+        self.device_buttons = []
+        self.visualizer_buttons = [] # For switching visualizers in menu
+        self.menu_labels = []
+        self.menu_scroll_y = 0
+        self.menu_total_height = 0
+        
+        # Visualizers
+        self.visualizers = [
+            {"name": "Spectrum (64 bars)", "function": self.draw_spectrum_v1},
+            {"name": "Blue Bars (7 bars)", "function": self.draw_spectrum_v2}
+        ]
+        self.current_vis_idx = 0
+        
+        # Peak tracking for Blue Bars (v2)
+        self.v2_bar_count = 7
+        self.v2_peaks = np.zeros(self.v2_bar_count)
+        self.v2_prev_heights = np.zeros(self.v2_bar_count)
+        self.v2_increasing = np.zeros(self.v2_bar_count, dtype=bool)
+        
         self.find_candidates()
         self.setup_audio()
+        self.init_menu()
         
+    def toggle_fullscreen(self):
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            # Store current size to restore later
+            self.width_before_fs, self.height_before_fs = self.width, self.height
+            self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+        else:
+            self.screen = pygame.display.set_mode((self.width_before_fs, self.height_before_fs), pygame.RESIZABLE)
+        
+        self.width, self.height = self.screen.get_size()
+        self.init_menu()
+        
+    def init_menu(self):
+        # Clear existing buttons
+        self.menu_buttons = []
+        self.device_buttons = []
+        self.visualizer_buttons = []
+        self.menu_labels = []
+        
+        # Calculate sizes relative to screen size
+        btn_width = 300
+        btn_height = 30
+        padding = 10
+        
+        start_x = (self.width - btn_width) // 2
+        
+        # We'll use a virtual Y coordinate and then offset everything by self.menu_scroll_y
+        current_y = 50
+        
+        # Header text
+        header_color = (0, 120, 215) # Windows Blue
+        label_size = 14
+        
+        # CONTROL MENU Label
+        self.menu_labels.append(buttons.Text(self.screen, "CONTROL MENU", start_x / label_size, current_y / label_size, (255, 255, 255), None, label_size))
+        
+        # Toggle Fullscreen Button
+        fs_text = "Exit Fullscreen (F)" if self.fullscreen else "Go Fullscreen (F)"
+        current_y += btn_height + padding
+        self.menu_buttons.append(buttons.Button(self.screen, fs_text, "toggle_fs", start_x, current_y, btn_width, btn_height))
+        
+        # Back to Visualizer Button
+        current_y += btn_height + padding
+        self.menu_buttons.append(buttons.Button(self.screen, "Back to Visualizer", "back", start_x, current_y, btn_width, btn_height))
+        
+        # SELECT VISUALIZER: Label
+        current_y += (btn_height + padding) * 2
+        self.menu_labels.append(buttons.Text(self.screen, "SELECT VISUALIZATION:", start_x / label_size, current_y / label_size, (255, 255, 255), None, label_size))
+        
+        for i, vis in enumerate(self.visualizers):
+            name = vis["name"]
+            if i == self.current_vis_idx:
+                name = f"> {name} <"
+            
+            current_y += btn_height + padding
+            btn = buttons.Button(self.screen, name, f"vis_{i}", start_x, current_y, btn_width, btn_height)
+            self.visualizer_buttons.append(btn)
+
+        # Sound Source Selection
+        current_y += (btn_height + padding) * 2
+        # SELECT SOUND SOURCE: Label
+        self.menu_labels.append(buttons.Text(self.screen, "SELECT SOUND SOURCE:", start_x / label_size, current_y / label_size, (255, 255, 255), None, label_size))
+        
+        for i, candidate in enumerate(self.candidates):
+            # Highlight current device
+            name = candidate.name
+            if name == self.active_device_name:
+                name = f"> {name} <"
+            
+            current_y += btn_height + padding
+            btn = buttons.Button(self.screen, name, f"dev_{i}", start_x, current_y, btn_width, btn_height)
+            self.device_buttons.append(btn)
+            
+        self.menu_total_height = current_y + btn_height + 50 # Add bottom padding
+        
+        # Ensure scroll is within bounds
+        max_scroll = max(0, self.menu_total_height - self.height)
+        if self.menu_scroll_y > max_scroll:
+            self.menu_scroll_y = max_scroll
+        
+        # Apply scroll offset
+        self.apply_menu_scroll()
+
+    def apply_menu_scroll(self):
+        for label in self.menu_labels:
+            label.position_y = (label.y * label.size) - self.menu_scroll_y
+        
+        for btn in self.menu_buttons + self.visualizer_buttons + self.device_buttons:
+            # Re-calculate position based on initial relative Y but with current scroll
+            # Actually, I'll just store the "base_y" for each button or recalculate them.
+            # Since init_menu is called whenever something changes, and it sets the buttons,
+            # we can just modify their position_y here.
+            # But wait, Button.recalculate uses relative_y.
+            # Let's just adjust them directly.
+            btn.position_y = (btn.relative_y * btn.font_size) - self.menu_scroll_y
+            btn.calc_text_position()
+
     def find_candidates(self):
         # SoundCard handles WASAPI loopback by including them in all_microphones
         print("DEBUG: Searching for audio devices...")
@@ -67,6 +193,7 @@ class Visualizer:
 
         device = self.candidates[self.current_candidate_idx]
         self.active_device_name = device.name
+        self.init_menu()
         print(f"DEBUG: Attempting Audio Capture on: {device.name}")
         
         self.stop_event.clear()
@@ -202,58 +329,200 @@ class Visualizer:
         self.current_candidate_idx = (self.current_candidate_idx - 1) % len(self.candidates)
         self.setup_audio()
 
+    def handle_menu_events(self, events):
+        position = pygame.mouse.get_pos()
+        for event in events:
+            if event.type == pygame.MOUSEWHEEL:
+                # scroll is in event.y (+ for up, - for down)
+                # Multiply by a factor for faster scrolling
+                self.menu_scroll_y -= event.y * 30
+                max_scroll = max(0, self.menu_total_height - self.height)
+                self.menu_scroll_y = np.clip(self.menu_scroll_y, 0, max_scroll)
+                self.apply_menu_scroll()
+                
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1: # Left click
+                    # Check main menu buttons
+                    for btn in self.menu_buttons:
+                        btn.check_if_over(position)
+                        if btn.over:
+                            if btn.text_return == "toggle_fs":
+                                self.toggle_fullscreen()
+                            elif btn.text_return == "back":
+                                self.state = "VISUALIZER"
+                    
+                    # Check visualizer buttons
+                    for btn in self.visualizer_buttons:
+                        btn.check_if_over(position)
+                        if btn.over:
+                            if btn.text_return.startswith("vis_"):
+                                idx = int(btn.text_return.split("_")[1])
+                                self.current_vis_idx = idx
+                                self.init_menu() # Refresh highlights
+
+                    # Check device buttons
+                    for btn in self.device_buttons:
+                        btn.check_if_over(position)
+                        if btn.over:
+                            if btn.text_return.startswith("dev_"):
+                                idx = int(btn.text_return.split("_")[1])
+                                self.current_candidate_idx = idx
+                                self.setup_audio()
+            
+            # Handle mouse hover highlights
+            for btn in self.menu_buttons:
+                btn.check_if_over(position)
+            for btn in self.visualizer_buttons:
+                btn.check_if_over(position)
+            for btn in self.device_buttons:
+                btn.check_if_over(position)
+
     def run(self):
         running = True
         while running:
-            for event in pygame.event.get():
+            events = pygame.event.get()
+            for event in events:
                 if event.type == pygame.QUIT:
                     running = False
+                elif event.type == pygame.VIDEORESIZE:
+                    if not self.fullscreen:
+                        self.width, self.height = event.w, event.h
+                        self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
+                        self.init_menu()
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_RIGHT:
                         self.next_device()
                     elif event.key == pygame.K_LEFT:
                         self.prev_device()
+                    elif event.key == pygame.K_f:
+                        self.toggle_fullscreen()
+                    elif event.key == pygame.K_v:
+                        self.current_vis_idx = (self.current_vis_idx + 1) % len(self.visualizers)
+                        self.init_menu()
+                    elif event.key == pygame.K_m:
+                        self.state = "MENU" if self.state == "VISUALIZER" else "VISUALIZER"
+            
+            if self.state == "MENU":
+                self.handle_menu_events(events)
             
             self.screen.fill((10, 10, 10))
             
-            # Draw bars
-            bar_width = WIDTH // BAR_COUNT
-            for i, val in enumerate(self.bars):
-                # Color gradient based on frequency
-                # Lower frequencies (left): Red/Orange
-                # Mid frequencies: Green/Cyan
-                # High frequencies (right): Blue/Purple
-                hue = i / BAR_COUNT
-                if hue < 0.33: # Bass -> Red/Yellow
-                    color = (255, int(255 * (hue/0.33)), 0)
-                elif hue < 0.66: # Mid -> Green/Cyan
-                    color = (int(255 * (1 - (hue-0.33)/0.33)), 255, int(255 * ((hue-0.33)/0.33)))
-                else: # High -> Blue/Purple
-                    color = (int(255 * ((hue-0.66)/0.34)), int(255 * (1 - (hue-0.66)/0.34)), 255)
-                
-                bar_height = int(val * HEIGHT * 0.8)
-                # Ensure a minimum height of 2 pixels for active-ish bars
-                if val > 0.01 and bar_height < 2:
-                    bar_height = 2
-                    
-                pygame.draw.rect(
-                    self.screen,
-                    color,
-                    (i * bar_width, HEIGHT - bar_height - 10, bar_width - 1, bar_height)
-                )
+            if self.state == "VISUALIZER":
+                # Draw the selected visualization
+                self.visualizers[self.current_vis_idx]["function"]()
 
-            # Draw status text
-            status_surface = self.font.render(f"Device: {self.active_device_name}", True, (200, 200, 200))
-            self.screen.blit(status_surface, (10, 10))
-            
-            help_surface = self.font.render("Press LEFT/RIGHT to change device", True, (150, 150, 150))
-            self.screen.blit(help_surface, (10, 30))
+                # Draw status text
+                status_surface = self.font.render(f"Device: {self.active_device_name}", True, (200, 200, 200))
+                self.screen.blit(status_surface, (10, 10))
+                
+                help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+                self.screen.blit(help_surface, (10, 30))
+            else:
+                # Draw Menu
+                for label in self.menu_labels:
+                    label.text_draw()
+                for btn in self.menu_buttons:
+                    btn.button_draw()
+                for btn in self.visualizer_buttons:
+                    btn.button_draw()
+                for btn in self.device_buttons:
+                    btn.button_draw()
+                
+                # Draw scrollbar if needed
+                if self.menu_total_height > self.height:
+                    scrollbar_width = 10
+                    scrollbar_x = self.width - scrollbar_width
+                    
+                    # Track
+                    pygame.draw.rect(self.screen, (30, 30, 30), (scrollbar_x, 0, scrollbar_width, self.height))
+                    
+                    # Handle
+                    handle_height = max(20, (self.height / self.menu_total_height) * self.height)
+                    handle_y = (self.menu_scroll_y / self.menu_total_height) * self.height
+                    pygame.draw.rect(self.screen, (100, 100, 100), (scrollbar_x, handle_y, scrollbar_width, handle_height))
             
             pygame.display.flip()
             self.clock.tick(FPS)
             
         self.stop_audio()
         pygame.quit()
+
+    def draw_spectrum_v1(self):
+        # Original 64-bar gradient visualization
+        bar_width = self.width // BAR_COUNT
+        for i, val in enumerate(self.bars):
+            # Color gradient based on frequency
+            hue = i / BAR_COUNT
+            if hue < 0.33: # Bass -> Red/Yellow
+                color = (255, int(255 * (hue/0.33)), 0)
+            elif hue < 0.66: # Mid -> Green/Cyan
+                color = (int(255 * (1 - (hue-0.33)/0.33)), 255, int(255 * ((hue-0.33)/0.33)))
+            else: # High -> Blue/Purple
+                color = (int(255 * ((hue-0.66)/0.34)), int(255 * (1 - (hue-0.66)/0.34)), 255)
+            
+            bar_height = int(val * self.height * 0.8)
+            if val > 0.01 and bar_height < 2:
+                bar_height = 2
+                
+            pygame.draw.rect(
+                self.screen,
+                color,
+                (i * bar_width, self.height - bar_height - 10, bar_width - 1, bar_height)
+            )
+
+    def draw_spectrum_v2(self):
+        # New 7-bar blue-shaded visualization
+        V2_BAR_COUNT = self.v2_bar_count
+        # Resample our BAR_COUNT (64) bars into 7
+        resampled_bars = np.zeros(V2_BAR_COUNT)
+        chunk_size = BAR_COUNT // V2_BAR_COUNT
+        for i in range(V2_BAR_COUNT):
+            start = i * chunk_size
+            end = (i + 1) * chunk_size if i < V2_BAR_COUNT - 1 else BAR_COUNT
+            resampled_bars[i] = np.mean(self.bars[start:end])
+
+        bar_width = self.width // V2_BAR_COUNT
+        padding = bar_width // 8
+        
+        for i, val in enumerate(resampled_bars):
+            # Shades of blue: from dark blue to light cyan
+            blue_intensity = 150 + int(105 * (i / V2_BAR_COUNT))
+            green_intensity = int(200 * (i / V2_BAR_COUNT))
+            color = (0, green_intensity, blue_intensity)
+            
+            bar_height = int(val * self.height * 0.7)
+            if val > 0.01 and bar_height < 4:
+                bar_height = 4
+                
+            # Peak logic: detect if we just finished increasing
+            if bar_height > self.v2_prev_heights[i]:
+                # Still increasing
+                self.v2_increasing[i] = True
+            elif bar_height < self.v2_prev_heights[i]:
+                if self.v2_increasing[i]:
+                    # Peak detected! (was increasing, now dropping)
+                    self.v2_peaks[i] = self.v2_prev_heights[i]
+                    self.v2_increasing[i] = False
+            
+            self.v2_prev_heights[i] = bar_height
+            
+            # Draw main bar
+            pygame.draw.rect(
+                self.screen,
+                color,
+                (i * bar_width + padding//2, self.height - bar_height - 20, bar_width - padding, bar_height)
+            )
+            
+            # Draw peak line (light grey)
+            if self.v2_peaks[i] > 0:
+                peak_y = self.height - int(self.v2_peaks[i]) - 20
+                pygame.draw.line(
+                    self.screen,
+                    (200, 200, 200), # Light grey
+                    (i * bar_width + padding//2, peak_y),
+                    (i * bar_width + padding//2 + bar_width - padding, peak_y),
+                    2 # 2 pixels thick
+                )
 
 if __name__ == "__main__":
     vis = Visualizer()
