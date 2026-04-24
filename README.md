@@ -7,20 +7,31 @@ elaborate visualisations next update I think.
 
 A Windows-only audio visualizer written in Python. It captures system audio (loopback) using WASAPI and renders a real-time frequency spectrum using Pygame.
  
-![Screenshot 2026-04-18 112103.png](assets/Screenshot%202026-04-18%20112103.png)
-![Screenshot 2026-04-19 115143.png](assets/Screenshot%202026-04-19%20115143.png)
-![Screenshot 2026-04-19 115239.png](assets/Screenshot%202026-04-19%20115239.png)
+screenshots
+![Blue Bars (7 bars).png](assets/Blue%20Bars%20%287%20bars%29.png)
+![Circular Kaleidoscope.png](assets/Circular%20Kaleidoscope.png)
+![Kaleidoscope.png](assets/Kaleidoscope.png)
+![Menu.png](assets/Menu.png)
+![Rotating bars.png](assets/Rotating%20bars.png)
+![Spectrum (64 bars).png](assets/Spectrum%20%2864%20bars%29.png)
+![Waveform.png](assets/Waveform.png)
+
 ## 🚀 Features
 
-- **Multiple Visualizations**: Switch between different visual representations of the audio data.
+- **Multiple Visualizations**: 
+  - **Spectrum (64 bars)**: Classic frequency spectrum with color gradients.
+  - **Blue Bars (7 bars)**: Minimalist blue bars with peak tracking and trail effects.
+  - **Kaleidoscope**: Dynamic 8-way symmetry with diamond-shaped particles.
+  - **Rotating Bars**: Audio-reactive bars on a rotating, color-cycling surface.
+  - **Waveform**: Smooth, color-cycling oscilloscope view.
+  - **Circular Kaleidoscope**: Complex mandalic patterns with ripple effects, nodal scaling, and organic morphing (elliptical distortion).
 - **WASAPI Loopback Capture**: Captures audio directly from your output devices (Spotify, YouTube, Games) without needing a microphone.
-- **Real-time FFT Analysis**: 64-bar frequency spectrum with logarithmic scaling for a balanced musical representation.
-- **Dynamic Auto-Gain**: Automatically adjusts sensitivity to ensure bars remain reactive regardless of system volume.
-- **Resizable Window & Fullscreen**: Resize the window to any size or press 'F' to toggle fullscreen mode.
-- **Interactive Device Switching**: Cycle through available audio output devices in real-time using arrow keys or the control menu.
-- **Scrollable Control Menu**: Press 'M' to access a control screen. If the list of devices or visualizers is long, use the **mouse wheel** to scroll.
-- **Smooth Visuals**: 60 FPS rendering with various styles (Classic Spectrum, Blue Bars with peak tracking).
-- **Robust Driver Support**: Powered by the `SoundCard` library to handle complex Windows audio configurations.
+- **Real-time FFT Analysis**: High-performance audio processing with logarithmic scaling for a balanced musical representation.
+- **Audio Sensitivity Control**: Manually adjust sensitivity (0.1x to 5.0x) to match different audio sources. Each visualizer has its own optimized default setting.
+- **Dynamic Auto-Gain**: Built-in normalization to ensure visualizers remain reactive regardless of system volume.
+- **Resizable Window & Fullscreen**: Seamlessly transition between windowed and fullscreen modes.
+- **Interactive Device Switching**: Cycle through available audio output devices in real-time.
+- **Scrollable Control Menu**: A comprehensive UI to manage settings, sound sources, and visual styles.
 
 ## 📋 Requirements
 
@@ -55,9 +66,12 @@ python main.py
 ### Controls
 - **LEFT Arrow**: Switch to the previous audio device.
 - **RIGHT Arrow**: Switch to the next audio device.
+- **UP Arrow**: Increase audio sensitivity.
+- **DOWN Arrow**: Decrease audio sensitivity.
 - **F Key**: Toggle Fullscreen mode.
-- **V Key**: Switch to the next visualization style.
+- **V Key**: Switch to the next visualization style (resets sensitivity to default).
 - **M Key**: Open/Close Control Menu.
+- **Mouse Wheel**: Scroll through the menu.
 - **Resize Window**: Drag the edges of the window to change its size.
 - **Close Window**: Exit the application.
 

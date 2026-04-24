@@ -55,10 +55,29 @@ class Visualizer:
         
         # Visualizers
         self.visualizers = [
-            {"name": "Spectrum (64 bars)", "function": self.draw_spectrum_v1},
-            {"name": "Blue Bars (7 bars)", "function": self.draw_spectrum_v2}
+            {"name": "Spectrum (64 bars)", "function": self.draw_spectrum_v1, "default_sensitivity": 2.0},
+            {"name": "Blue Bars (7 bars)", "function": self.draw_spectrum_v2, "default_sensitivity": 4.5},
+            {"name": "Kaleidoscope", "function": self.draw_kaleidoscope, "default_sensitivity": 1.0},
+            {"name": "Rotating Bars", "function": self.draw_rotating_bars, "default_sensitivity": 1.5},
+            {"name": "Waveform", "function": self.draw_waveform, "default_sensitivity": 1.0},
+            {"name": "Circular Kaleidoscope", "function": self.draw_circular_kaleidoscope, "default_sensitivity": 1.2}
         ]
         self.current_vis_idx = 0
+        
+        # Audio sensitivity
+        self.sensitivity = self.visualizers[self.current_vis_idx]["default_sensitivity"]
+        self.animation_time = 0
+        
+        # Rotating Bars state
+        self.recreate_rot_bar_surface()
+        self.rot_bar_hue = 0
+        
+        # Random offsets for movement
+        self.random_offsets = np.random.rand(15) * 2 * np.pi
+        self.random_speeds = 0.5 + np.random.rand(15) * 1.5
+        self.random_drift = np.random.randn(15, 2) * 0.05 # Random small drifts
+        self.random_rot_speeds = (np.random.rand(15) - 0.5) * 5.0 # Random rotation speeds
+        self.random_rot_offsets = np.random.rand(15) * 2 * np.pi
         
         # Peak tracking for Blue Bars (v2)
         self.v2_bar_count = 7
@@ -66,10 +85,35 @@ class Visualizer:
         self.v2_prev_heights = np.zeros(self.v2_bar_count)
         self.v2_increasing = np.zeros(self.v2_bar_count, dtype=bool)
         
+        # Waveform buffer
+        self.waveform_data = np.zeros(1024)
+        
+        # Circular Kaleidoscope distortion state
+        self.ck_distortion_strength = 0.0
+        self.ck_distortion_angle = 0.0
+        self.ck_target_strength = 0.0
+        self.ck_target_angle = 0.0
+        self.ck_change_time = 0.0
+        
+        # Audio sensitivity (initialized to first visualizer's default)
+        self.sensitivity = self.visualizers[self.current_vis_idx]["default_sensitivity"]
+        
+        # Fade surface for v2 trail effect
+        self.fade_surface = pygame.Surface((self.width, self.height))
+        self.fade_surface.set_alpha(30) # Adjust alpha for fade speed
+        self.fade_surface.fill((10, 10, 10))
+        
         self.find_candidates()
         self.setup_audio()
         self.init_menu()
         
+    def recreate_rot_bar_surface(self):
+        # Scale with screen: 80% of the minimum dimension
+        self.rot_bar_surface_size = int(min(self.width, self.height) * 0.8)
+        # Ensure it's at least a reasonable size
+        self.rot_bar_surface_size = max(self.rot_bar_surface_size, 100)
+        self.rot_bar_surface = pygame.Surface((self.rot_bar_surface_size, self.rot_bar_surface_size), pygame.SRCALPHA)
+
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
         if self.fullscreen:
@@ -80,6 +124,10 @@ class Visualizer:
             self.screen = pygame.display.set_mode((self.width_before_fs, self.height_before_fs), pygame.RESIZABLE)
         
         self.width, self.height = self.screen.get_size()
+        self.fade_surface = pygame.Surface((self.width, self.height))
+        self.fade_surface.set_alpha(30)
+        self.fade_surface.fill((10, 10, 10))
+        self.recreate_rot_bar_surface()
         self.init_menu()
         
     def init_menu(self):
@@ -115,6 +163,15 @@ class Visualizer:
         current_y += btn_height + padding
         self.menu_buttons.append(buttons.Button(self.screen, "Back to Visualizer", "back", start_x, current_y, btn_width, btn_height))
         
+        # SENSITIVITY: Label and Buttons
+        current_y += (btn_height + padding) * 2
+        self.menu_labels.append(buttons.Text(self.screen, f"SENSITIVITY: {self.sensitivity:.1f}x", start_x / label_size, current_y / label_size, (255, 255, 255), None, label_size))
+        
+        current_y += btn_height + padding
+        half_btn_width = (btn_width - padding) // 2
+        self.menu_buttons.append(buttons.Button(self.screen, "-", "sens_down", start_x, current_y, half_btn_width, btn_height))
+        self.menu_buttons.append(buttons.Button(self.screen, "+", "sens_up", start_x + half_btn_width + padding, current_y, half_btn_width, btn_height))
+
         # SELECT VISUALIZER: Label
         current_y += (btn_height + padding) * 2
         self.menu_labels.append(buttons.Text(self.screen, "SELECT VISUALIZATION:", start_x / label_size, current_y / label_size, (255, 255, 255), None, label_size))
@@ -253,11 +310,16 @@ class Visualizer:
         # Low frequencies often have too much, so we attenuate them slightly
         freqs = np.linspace(0, SAMPLE_RATE / 2, num_bins)
         # Weighting: gradual boost from 100Hz upwards (approx 3dB/octave tilt)
-        weighting = np.sqrt(freqs / 1000.0 + 0.1) 
+        # Using a more standard weighting-like curve to balance mids
+        # Reduce mids (around 1kHz-4kHz) slightly if they are too dominant
+        # Standard weighting: np.sqrt(freqs / 1000.0 + 0.1)
+        # Modified: attenuate mids by dividing by a factor that peaks at 2kHz
+        mid_attenuation = 1.0 + 0.15 * np.exp(-((np.log10(freqs + 1) - np.log10(2000))**2) / 0.5)
+        weighting = np.sqrt(freqs / 1000.0 + 0.1) / mid_attenuation
         fft_data = fft_data * weighting
         
         # Add a small floor to fft_data to reduce noise floor impact
-        fft_data = np.maximum(fft_data - 0.002, 0)
+        fft_data = np.maximum(fft_data - 0.001, 0)
         
         # Group FFT bins into bars using a better scale for music
         new_bars = np.zeros(BAR_COUNT)
@@ -269,8 +331,8 @@ class Visualizer:
         
         # Ignore very low frequencies (below ~60Hz) to avoid DC offset/hum
         min_idx = 3 
-        # Most music content is below 14kHz
-        max_idx = int(num_bins * (14000 / (SAMPLE_RATE / 2)))
+        # Most music content is below 16kHz
+        max_idx = int(num_bins * (16000 / (SAMPLE_RATE / 2)))
         
         # Logarithmic indices from min_idx to max_idx
         indices = np.logspace(np.log10(min_idx), np.log10(max_idx), BAR_COUNT + 1).astype(int)
@@ -283,41 +345,58 @@ class Visualizer:
                 if len(subset) > 0:
                     # Taper the very first few bars (sub-bass) to prevent 100% saturation
                     scale_factor = 1.0
-                    if i < 3: scale_factor = 0.5 + (i * 0.15)
+                    if i < 2: scale_factor = 0.7 + (i * 0.15)
                     
-                    new_bars[i] = (np.max(subset) * 0.6 + np.mean(subset) * 0.4) * scale_factor
+                    new_bars[i] = (np.max(subset) * 0.8 + np.mean(subset) * 0.2) * scale_factor
         
-        # Dynamic Sensitivity / Auto-Gain
-        # We'll track the max value seen recently and adjust sensitivity
+        # Dynamic Sensitivity / Auto-Gain (Per-band and Global)
+        # We'll track the max value seen recently for each bar and adjust sensitivity
+        if not hasattr(self, 'bar_max_history'):
+            self.bar_max_history = [[] for _ in range(BAR_COUNT)]
+            
+        for i in range(BAR_COUNT):
+            if new_bars[i] > 0.0001:
+                self.bar_max_history[i].append(new_bars[i])
+            if len(self.bar_max_history[i]) > 120: # Keep 2 seconds
+                self.bar_max_history[i].pop(0)
+                
+            if self.bar_max_history[i]:
+                # Per-bar normalization: target 0.8 per bar peak
+                bar_peak = np.percentile(self.bar_max_history[i], 90)
+                if bar_peak > 0:
+                    new_bars[i] = new_bars[i] * (0.8 / bar_peak)
+        
+        # Now apply a global peak target as well to avoid everything being too loud
+        current_max = np.max(new_bars)
         if not hasattr(self, 'max_history'):
             self.max_history = []
             
-        current_max = np.max(new_bars)
-        if current_max > 0.001:
+        if current_max > 0.0001:
             self.max_history.append(current_max)
         
-        # Keep only the last 60 frames (~1 second of audio) for faster response
+        # Keep only the last 60 frames (~1 second of audio)
         if len(self.max_history) > 60:
             self.max_history.pop(0)
             
-        # Target a max value of ~0.5 to keep bars lower and prevent "too high" appearance
+        # Target a global max value of ~0.9
         if self.max_history:
-            # Use 90th percentile to ignore extreme peaks
-            target_peak = np.percentile(self.max_history, 90)
-            if target_peak > 0:
-                dynamic_gain = 0.5 / target_peak
-                # Limit gain to a reasonable range
-                dynamic_gain = np.clip(dynamic_gain, 0.5, 1000.0)
-                new_bars = new_bars * dynamic_gain
+            target_peak = np.percentile(self.max_history, 95)
+            if target_peak > 0.95: # Only compress if it's very loud
+                global_gain = 0.9 / target_peak
+                new_bars = new_bars * global_gain
         
-        # Apply a gentler non-linear scaling
-        new_bars = np.power(np.clip(new_bars, 0, 1), 0.75)
+        # Apply a slight expansive scaling to make it more "punchy"
+        new_bars = np.power(np.clip(new_bars, 0, 1), 0.9)
             
         # Clip to ensure it's in range [0, 1]
-        new_bars = np.clip(new_bars, 0, 1)
+        new_bars = np.clip(new_bars * self.sensitivity, 0, 1)
+        
+        # Store waveform data (last 1024 samples)
+        # We use a bit of sensitivity here too for visualization
+        self.waveform_data = np.clip(audio_data * self.sensitivity, -1, 1)
         
         # Smoothing (running on a separate thread)
-        self.bars = self.bars * 0.5 + new_bars * 0.5
+        self.bars = self.bars * 0.4 + new_bars * 0.6
 
     def next_device(self):
         if not self.candidates: return
@@ -350,6 +429,12 @@ class Visualizer:
                                 self.toggle_fullscreen()
                             elif btn.text_return == "back":
                                 self.state = "VISUALIZER"
+                            elif btn.text_return == "sens_up":
+                                self.sensitivity = min(5.0, self.sensitivity + 0.1)
+                                self.init_menu()
+                            elif btn.text_return == "sens_down":
+                                self.sensitivity = max(0.1, self.sensitivity - 0.1)
+                                self.init_menu()
                     
                     # Check visualizer buttons
                     for btn in self.visualizer_buttons:
@@ -358,6 +443,7 @@ class Visualizer:
                             if btn.text_return.startswith("vis_"):
                                 idx = int(btn.text_return.split("_")[1])
                                 self.current_vis_idx = idx
+                                self.sensitivity = self.visualizers[self.current_vis_idx]["default_sensitivity"]
                                 self.init_menu() # Refresh highlights
 
                     # Check device buttons
@@ -380,6 +466,7 @@ class Visualizer:
     def run(self):
         running = True
         while running:
+            self.animation_time += 1 / FPS
             events = pygame.event.get()
             for event in events:
                 if event.type == pygame.QUIT:
@@ -388,6 +475,10 @@ class Visualizer:
                     if not self.fullscreen:
                         self.width, self.height = event.w, event.h
                         self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
+                        self.fade_surface = pygame.Surface((self.width, self.height))
+                        self.fade_surface.set_alpha(30)
+                        self.fade_surface.fill((10, 10, 10))
+                        self.recreate_rot_bar_surface()
                         self.init_menu()
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_RIGHT:
@@ -398,25 +489,38 @@ class Visualizer:
                         self.toggle_fullscreen()
                     elif event.key == pygame.K_v:
                         self.current_vis_idx = (self.current_vis_idx + 1) % len(self.visualizers)
+                        self.sensitivity = self.visualizers[self.current_vis_idx]["default_sensitivity"]
                         self.init_menu()
                     elif event.key == pygame.K_m:
                         self.state = "MENU" if self.state == "VISUALIZER" else "VISUALIZER"
+                    elif event.key == pygame.K_UP:
+                        self.sensitivity = min(5.0, self.sensitivity + 0.1)
+                        self.init_menu()
+                    elif event.key == pygame.K_DOWN:
+                        self.sensitivity = max(0.1, self.sensitivity - 0.1)
+                        self.init_menu()
             
             if self.state == "MENU":
                 self.handle_menu_events(events)
             
-            self.screen.fill((10, 10, 10))
+            # Use semi-transparent clear for v2 and kaleidoscope to allow fading trails
+            if self.state == "VISUALIZER" and self.visualizers[self.current_vis_idx]["function"] in [self.draw_spectrum_v2, self.draw_kaleidoscope, self.draw_rotating_bars, self.draw_waveform, self.draw_circular_kaleidoscope]:
+                # These handle their own clearing with alpha surface
+                pass
+            else:
+                self.screen.fill((10, 10, 10))
             
             if self.state == "VISUALIZER":
                 # Draw the selected visualization
                 self.visualizers[self.current_vis_idx]["function"]()
 
-                # Draw status text
-                status_surface = self.font.render(f"Device: {self.active_device_name}", True, (200, 200, 200))
-                self.screen.blit(status_surface, (10, 10))
-                
-                help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
-                self.screen.blit(help_surface, (10, 30))
+                if self.visualizers[self.current_vis_idx]["function"] not in [self.draw_spectrum_v2, self.draw_kaleidoscope, self.draw_rotating_bars, self.draw_waveform, self.draw_circular_kaleidoscope]:
+                    # Draw status text for other visualizers (v2/kaleidoscope draw their own to avoid fading)
+                    status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+                    self.screen.blit(status_surface, (10, 10))
+                    
+                    help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+                    self.screen.blit(help_surface, (10, 30))
             else:
                 # Draw Menu
                 for label in self.menu_labels:
@@ -471,6 +575,9 @@ class Visualizer:
             )
 
     def draw_spectrum_v2(self):
+        # Apply fade effect
+        self.screen.blit(self.fade_surface, (0, 0))
+        
         # New 7-bar blue-shaded visualization
         V2_BAR_COUNT = self.v2_bar_count
         # Resample our BAR_COUNT (64) bars into 7
@@ -523,6 +630,304 @@ class Visualizer:
                     (i * bar_width + padding//2 + bar_width - padding, peak_y),
                     2 # 2 pixels thick
                 )
+        
+        # Draw status text here to avoid them being faded
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
+
+    def draw_rotating_bars(self):
+        # Apply fade effect
+        self.screen.blit(self.fade_surface, (0, 0))
+        
+        # Update color cycling
+        self.rot_bar_hue = (self.rot_bar_hue + 0.005) % 1.0
+        # Convert hue to RGB
+        def hue_to_rgb(h):
+            # Simple hue to rgb
+            h = h * 6
+            c = 255
+            x = int(c * (1 - abs(h % 2 - 1)))
+            if h < 1: return (c, x, 0)
+            if h < 2: return (x, c, 0)
+            if h < 3: return (0, c, x)
+            if h < 4: return (0, x, c)
+            if h < 5: return (x, 0, c)
+            return (c, 0, x)
+            
+        color = hue_to_rgb(self.rot_bar_hue)
+        
+        # Clear the small surface
+        self.rot_bar_surface.fill((0, 0, 0, 0))
+        
+        # Draw bars onto the small surface
+        # We'll use 32 bars for better fit on 300px
+        num_bars = 32
+        resampled_bars = np.zeros(num_bars)
+        chunk_size = BAR_COUNT // num_bars
+        for i in range(num_bars):
+            start = i * chunk_size
+            end = (i + 1) * chunk_size
+            resampled_bars[i] = np.mean(self.bars[start:end])
+            
+        bar_w = self.rot_bar_surface_size // num_bars
+        for i, val in enumerate(resampled_bars):
+            # Draw mirrored bars from center line of the surface
+            bar_h = int(val * (self.rot_bar_surface_size // 2) * 0.9)
+            if val > 0.01 and bar_h < 2: bar_h = 2
+            
+            # Draw upwards and downwards from center
+            center_y = self.rot_bar_surface_size // 2
+            pygame.draw.rect(self.rot_bar_surface, color, (i * bar_w, center_y - bar_h, bar_w - 1, bar_h))
+            pygame.draw.rect(self.rot_bar_surface, color, (i * bar_w, center_y, bar_w - 1, bar_h))
+
+        # Rotate the surface
+        rotation_angle = self.animation_time * 12 # 12 degrees per second
+        rotated_surf = pygame.transform.rotate(self.rot_bar_surface, rotation_angle)
+        
+        # Blit to center of screen
+        rect = rotated_surf.get_rect(center=(self.width // 2, self.height // 2))
+        self.screen.blit(rotated_surf, rect)
+        
+        # Draw status text
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
+
+    def draw_kaleidoscope(self):
+        # Apply fade effect
+        self.screen.blit(self.fade_surface, (0, 0))
+        
+        # Center of the screen
+        cx, cy = self.width // 2, self.height // 2
+        
+        # Use more diamonds for a busier look, but smaller
+        num_diamonds = 15
+        resampled = np.zeros(num_diamonds)
+        chunk = BAR_COUNT // num_diamonds
+        for i in range(num_diamonds):
+            resampled[i] = np.mean(self.bars[i*chunk : (i+1)*chunk])
+            
+        max_dim = min(self.width, self.height) // 2
+        
+        for i, val in enumerate(resampled):
+            # Distance from center with slight oscillation and random phase
+            base_dist = (i + 1) * (max_dim / (num_diamonds + 1))
+            # Scale oscillation with screen size
+            dist_oscillation = (max_dim * 0.1) * np.sin(self.animation_time * self.random_speeds[i] + self.random_offsets[i])
+            dist = base_dist + dist_oscillation
+            
+            # Size based on audio value: more reactive and slightly larger range
+            # Scale base size with screen size (using max_dim as reference)
+            size = int(np.power(val, 0.6) * (max_dim * 0.3)) + 2
+            
+            # Color based on index and time: more vibrant response to audio
+            hue = (i / num_diamonds) + (self.animation_time * 0.1) + (self.random_offsets[i] / (2*np.pi))
+            # Add audio-reactive brightness to color
+            vibrancy = 127 + 128 * val
+            color = (
+                int(vibrancy * (0.5 + 0.5 * np.sin(hue * 2 * np.pi))),
+                int(vibrancy * (0.5 + 0.5 * np.sin(hue * 2 * np.pi + 2*np.pi/3))),
+                int(vibrancy * (0.5 + 0.5 * np.sin(hue * 2 * np.pi + 4*np.pi/3)))
+            )
+            
+            # Slowly rotating angle for the base triangle, with per-diamond random speed variation
+            rotation_speed = 0.5 * self.random_speeds[i]
+            angle = (i / num_diamonds) * (np.pi / 4) + (self.animation_time * rotation_speed) + self.random_offsets[i]
+            
+            # Base point with a tiny bit of random drift/jitter - scaled with screen size
+            bx = dist * np.cos(angle) + self.random_drift[i][0] * (max_dim * 0.05)
+            by = dist * np.sin(angle) + self.random_drift[i][1] * (max_dim * 0.05)
+            
+            # Diamond's own rotation
+            diamond_rot = self.animation_time * self.random_rot_speeds[i] + self.random_rot_offsets[i]
+            
+            def draw_diamond(x, y, s, c, rot):
+                # Points of a diamond centered at (0,0) before translation and rotation
+                # A diamond is basically a square rotated by 45 degrees, 
+                # but here we'll just rotate the 4 cardinal points.
+                base_points = [
+                    (0, -s), (s, 0), (0, s), (-s, 0)
+                ]
+                
+                rotated_points = []
+                cos_r = np.cos(rot)
+                sin_r = np.sin(rot)
+                
+                for px, py in base_points:
+                    # Rotate point around its own center
+                    rx = px * cos_r - py * sin_r
+                    ry = px * sin_r + py * cos_r
+                    # Translate to final position relative to screen center
+                    rotated_points.append((cx + x + rx, cy + y + ry))
+                
+                pygame.draw.polygon(self.screen, c, rotated_points)
+
+            # 8-way symmetry
+            coords = [
+                (bx, by), (by, bx),
+                (-bx, by), (-by, bx),
+                (bx, -by), (by, -bx),
+                (-bx, -by), (-by, -bx)
+            ]
+            
+            for tx, ty in coords:
+                draw_diamond(tx, ty, size, color, diamond_rot)
+
+        # Draw status text
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
+
+    def draw_waveform(self):
+        # Apply fade effect for a trailing oscilloscope look
+        self.screen.blit(self.fade_surface, (0, 0))
+        
+        points = []
+        num_samples = len(self.waveform_data)
+        
+        # Determine center line
+        center_y = self.height // 2
+        amplitude = self.height // 3
+        
+        for i in range(num_samples):
+            x = int((i / num_samples) * self.width)
+            # Waveform data is in range [-1, 1]
+            y = int(center_y + (self.waveform_data[i] * amplitude))
+            points.append((x, y))
+            
+        if len(points) > 1:
+            # Color cycling
+            hue = (self.animation_time * 0.2) % 1.0
+            def hue_to_rgb(h):
+                h = h * 6
+                c = 255
+                x = int(c * (1 - abs(h % 2 - 1)))
+                if h < 1: return (c, x, 0)
+                if h < 2: return (x, c, 0)
+                if h < 3: return (0, c, x)
+                if h < 4: return (0, x, c)
+                if h < 5: return (x, 0, c)
+                return (c, 0, x)
+            
+            color = hue_to_rgb(hue)
+            pygame.draw.lines(self.screen, color, False, points, 2)
+            
+        # Draw status text
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
+
+    def draw_circular_kaleidoscope(self):
+        # Apply fade effect
+        self.screen.blit(self.fade_surface, (0, 0))
+        
+        # Update distortion state
+        dt = 1/FPS
+        self.ck_change_time -= dt
+        if self.ck_change_time <= 0:
+            # Change target distortion every 2-5 seconds
+            self.ck_target_strength = np.random.uniform(0.0, 0.4) # 0.0 is circle, up to 0.4 oval
+            self.ck_target_angle = np.random.uniform(0, np.pi)
+            self.ck_change_time = np.random.uniform(2.0, 5.0)
+            
+        # Smoothly interpolate towards targets
+        self.ck_distortion_strength += (self.ck_target_strength - self.ck_distortion_strength) * 0.01
+        self.ck_distortion_angle += (self.ck_target_angle - self.ck_distortion_angle) * 0.01
+        
+        cx, cy = self.width // 2, self.height // 2
+        max_dim = min(self.width, self.height) // 2
+        
+        # Use 12 sectors for circular symmetry
+        num_sectors = 12
+        num_rings = 8
+        
+        # Resample audio data into 8 bands
+        resampled = np.zeros(num_rings)
+        chunk = BAR_COUNT // num_rings
+        for i in range(num_rings):
+            resampled[i] = np.mean(self.bars[i*chunk : (i+1)*chunk])
+            
+        for r in range(num_rings):
+            # Audio value for this ring
+            val = resampled[r]
+            
+            # Base radius for this ring
+            base_radius = (r + 1) * (max_dim / (num_rings + 1))
+            
+            # Ripple effect: modulate distance with a sine wave moving from middle
+            ripple = np.sin(self.animation_time * 3.0 - r * 0.8) * (max_dim * 0.05)
+            
+            # Audio reactive radius
+            radius = base_radius + ripple + (val * max_dim * 0.15)
+            
+            # Rotation for this ring
+            ring_rot = self.animation_time * (0.2 + r * 0.1)
+            
+            # Color cycling
+            hue = (self.animation_time * 0.1 + r / num_rings) % 1.0
+            def hue_to_rgb(h, v):
+                h = h * 6
+                c = int(255 * v)
+                x = int(c * (1 - abs(h % 2 - 1)))
+                if h < 1: return (c, x, 0)
+                if h < 2: return (x, c, 0)
+                if h < 3: return (0, c, x)
+                if h < 4: return (0, x, c)
+                if h < 5: return (x, 0, c)
+                return (c, 0, x)
+            
+            color = hue_to_rgb(hue, 0.5 + 0.5 * val)
+            
+            # Distortion helper
+            def get_distorted_pos(angle, r):
+                # Basic circle
+                x = r * np.cos(angle)
+                y = r * np.sin(angle)
+                
+                # Apply elliptical distortion
+                # Rotate point to distortion frame
+                cos_da = np.cos(self.ck_distortion_angle)
+                sin_da = np.sin(self.ck_distortion_angle)
+                xr = x * cos_da + y * sin_da
+                yr = -x * sin_da + y * cos_da
+                
+                # Scale in distortion frame (one axis grows, other shrinks)
+                xr *= (1.0 + self.ck_distortion_strength)
+                yr *= (1.0 - self.ck_distortion_strength)
+                
+                # Rotate back
+                xf = xr * cos_da - yr * sin_da
+                yf = xr * sin_da + yr * cos_da
+                
+                return cx + xf, cy + yf
+
+            # Draw dots or small circles in a circular pattern
+            for s in range(num_sectors):
+                angle = (s / num_sectors) * 2 * np.pi + ring_rot
+                px, py = get_distorted_pos(angle, radius)
+                
+                # Size of the element - scaled with screen and audio
+                base_node_size = max_dim * 0.03
+                size = int(base_node_size + val * (max_dim * 0.1))
+                
+                # Alternative: Draw a line connecting to the next sector for a ring look
+                next_angle = ((s + 1) / num_sectors) * 2 * np.pi + ring_rot
+                nx, ny = get_distorted_pos(next_angle, radius)
+                
+                pygame.draw.line(self.screen, color, (px, py), (nx, ny), max(1, size // 6))
+                pygame.draw.circle(self.screen, color, (int(px), int(py)), size // 2)
+
+        # Draw status text
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
 
 if __name__ == "__main__":
     vis = Visualizer()
