@@ -16,7 +16,7 @@ except AttributeError:
     pass
 
 # Constants
-WIDTH, HEIGHT = 800, 400
+WIDTH, HEIGHT = 800, 600
 FPS = 60
 FFT_SIZE = 2048
 BAR_COUNT = 64
@@ -57,7 +57,9 @@ class Visualizer:
         self.visualizers = [
             {"name": "Spectrum (64 bars)", "function": self.draw_spectrum_v1, "default_sensitivity": 2.0},
             {"name": "Blue Bars (7 bars)", "function": self.draw_spectrum_v2, "default_sensitivity": 4.5},
+            {"name": "Old School LED", "function": self.draw_led_spectrum, "default_sensitivity": 4.5},
             {"name": "Kaleidoscope", "function": self.draw_kaleidoscope, "default_sensitivity": 1.0},
+            {"name": "Kaleidoscope v2", "function": self.draw_kaleidoscope_v2, "default_sensitivity": 1.0},
             {"name": "Rotating Bars", "function": self.draw_rotating_bars, "default_sensitivity": 1.5},
             {"name": "Waveform", "function": self.draw_waveform, "default_sensitivity": 1.0},
             {"name": "Circular Kaleidoscope", "function": self.draw_circular_kaleidoscope, "default_sensitivity": 1.2}
@@ -73,17 +75,21 @@ class Visualizer:
         self.rot_bar_hue = 0
         
         # Random offsets for movement
-        self.random_offsets = np.random.rand(15) * 2 * np.pi
-        self.random_speeds = 0.5 + np.random.rand(15) * 1.5
-        self.random_drift = np.random.randn(15, 2) * 0.05 # Random small drifts
-        self.random_rot_speeds = (np.random.rand(15) - 0.5) * 5.0 # Random rotation speeds
-        self.random_rot_offsets = np.random.rand(15) * 2 * np.pi
+        self.max_diamonds = 100
+        self.random_offsets = np.random.rand(self.max_diamonds) * 2 * np.pi
+        self.random_speeds = 0.5 + np.random.rand(self.max_diamonds) * 1.5
+        self.random_drift = np.random.randn(self.max_diamonds, 2) * 0.05 # Random small drifts
+        self.random_rot_speeds = (np.random.rand(self.max_diamonds) - 0.5) * 5.0 # Random rotation speeds
+        self.random_rot_offsets = np.random.rand(self.max_diamonds) * 2 * np.pi
         
         # Peak tracking for Blue Bars (v2)
         self.v2_bar_count = 7
         self.v2_peaks = np.zeros(self.v2_bar_count)
         self.v2_prev_heights = np.zeros(self.v2_bar_count)
         self.v2_increasing = np.zeros(self.v2_bar_count, dtype=bool)
+
+        # Old School LED visualizer state
+        self.led_bar_count = 7
         
         # Waveform buffer
         self.waveform_data = np.zeros(1024)
@@ -101,7 +107,7 @@ class Visualizer:
         # Fade surface for v2 trail effect
         self.fade_surface = pygame.Surface((self.width, self.height))
         self.fade_surface.set_alpha(30) # Adjust alpha for fade speed
-        self.fade_surface.fill((10, 10, 10))
+        self.fade_surface.fill((0, 0, 0))
         
         self.find_candidates()
         self.setup_audio()
@@ -126,7 +132,7 @@ class Visualizer:
         self.width, self.height = self.screen.get_size()
         self.fade_surface = pygame.Surface((self.width, self.height))
         self.fade_surface.set_alpha(30)
-        self.fade_surface.fill((10, 10, 10))
+        self.fade_surface.fill((0, 0, 0))
         self.recreate_rot_bar_surface()
         self.init_menu()
         
@@ -477,7 +483,7 @@ class Visualizer:
                         self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
                         self.fade_surface = pygame.Surface((self.width, self.height))
                         self.fade_surface.set_alpha(30)
-                        self.fade_surface.fill((10, 10, 10))
+                        self.fade_surface.fill((0, 0, 0))
                         self.recreate_rot_bar_surface()
                         self.init_menu()
                 elif event.type == pygame.KEYDOWN:
@@ -504,17 +510,17 @@ class Visualizer:
                 self.handle_menu_events(events)
             
             # Use semi-transparent clear for v2 and kaleidoscope to allow fading trails
-            if self.state == "VISUALIZER" and self.visualizers[self.current_vis_idx]["function"] in [self.draw_spectrum_v2, self.draw_kaleidoscope, self.draw_rotating_bars, self.draw_waveform, self.draw_circular_kaleidoscope]:
+            if self.state == "VISUALIZER" and self.visualizers[self.current_vis_idx]["function"] in [self.draw_spectrum_v2, self.draw_kaleidoscope, self.draw_kaleidoscope_v2, self.draw_rotating_bars, self.draw_waveform, self.draw_circular_kaleidoscope]:
                 # These handle their own clearing with alpha surface
                 pass
             else:
-                self.screen.fill((10, 10, 10))
+                self.screen.fill((0, 0, 0))
             
             if self.state == "VISUALIZER":
                 # Draw the selected visualization
                 self.visualizers[self.current_vis_idx]["function"]()
 
-                if self.visualizers[self.current_vis_idx]["function"] not in [self.draw_spectrum_v2, self.draw_kaleidoscope, self.draw_rotating_bars, self.draw_waveform, self.draw_circular_kaleidoscope]:
+                if self.visualizers[self.current_vis_idx]["function"] not in [self.draw_spectrum_v2, self.draw_kaleidoscope, self.draw_kaleidoscope_v2, self.draw_rotating_bars, self.draw_waveform, self.draw_circular_kaleidoscope]:
                     # Draw status text for other visualizers (v2/kaleidoscope draw their own to avoid fading)
                     status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
                     self.screen.blit(status_surface, (10, 10))
@@ -631,7 +637,67 @@ class Visualizer:
                     2 # 2 pixels thick
                 )
         
-        # Draw status text here to avoid them being faded
+        # Status text
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
+
+    def draw_led_spectrum(self):
+        # Apply dark background
+        self.screen.fill((0, 0, 0))
+        
+        LED_BAR_COUNT = self.led_bar_count
+        resampled_bars = np.zeros(LED_BAR_COUNT)
+        chunk_size = BAR_COUNT // LED_BAR_COUNT
+        for i in range(LED_BAR_COUNT):
+            start = i * chunk_size
+            end = (i + 1) * chunk_size if i < LED_BAR_COUNT - 1 else BAR_COUNT
+            resampled_bars[i] = np.mean(self.bars[start:end])
+
+        bar_width = self.width // LED_BAR_COUNT
+        padding = bar_width // 6
+        led_spacing = 4
+        num_leds = 15
+        led_height = (self.height - 100) // num_leds - led_spacing
+        # Limit LED height to max 10
+        if led_height > 10:
+            led_height = 10
+        
+        for i, val in enumerate(resampled_bars):
+            # Calculate how many LEDs should be lit
+            lit_leds = int(val * num_leds * 1.2) # multiplier to make it more responsive
+            lit_leds = min(lit_leds, num_leds)
+            
+            for j in range(num_leds):
+                # LED color based on position
+                if j < 8: # Bottom 8: Green
+                    color_on = (0, 255, 0)
+                    color_off = (0, 0, 0)
+                elif j < 12: # Next 4: Yellow
+                    color_on = (255, 255, 0)
+                    color_off = (0, 0, 0)
+                else: # Top 3: Red
+                    color_on = (255, 0, 0)
+                    color_off = (0, 0, 0)
+                
+                is_lit = j < lit_leds
+                color = color_on if is_lit else color_off
+                
+                # Draw LED segment
+                rect_x = i * bar_width + padding
+                rect_y = self.height - 50 - (j + 1) * (led_height + led_spacing)
+                rect_w = bar_width - 2 * padding
+                rect_h = led_height
+                
+                pygame.draw.rect(self.screen, color, (rect_x, rect_y, rect_w, rect_h))
+                
+                # Draw "glass" effect on lit LEDs
+                if is_lit:
+                    pygame.draw.rect(self.screen, (255, 255, 255), (rect_x + 2, rect_y + 2, rect_w - 8, 2), 0)
+
+        # Status text
         status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
         self.screen.blit(status_surface, (10, 10))
         
@@ -750,6 +816,98 @@ class Visualizer:
                 # A diamond is basically a square rotated by 45 degrees, 
                 # but here we'll just rotate the 4 cardinal points.
                 base_points = [
+                    (0, -s/2), (s, 0), (0, s/2), (-s, 0)
+                ]
+                
+                rotated_points = []
+                cos_r = np.cos(rot)
+                sin_r = np.sin(rot)
+                
+                for px, py in base_points:
+                    # Rotate point around its own center
+                    rx = px * cos_r - py * sin_r
+                    ry = px * sin_r + py * cos_r
+                    # Translate to final position relative to screen center
+                    #rotated_points.append((cx + x + rx, cy + y + ry))
+                    rotated_points.append((cx + x + rx, cy + y + ry))
+
+                pygame.draw.polygon(self.screen, c, rotated_points)
+
+            # 8-way symmetry
+            coords = [
+                (bx, by), (by, bx),
+                (-bx, by), (-by, bx),
+                (bx, -by), (by, -bx),
+                (-bx, -by), (-by, -bx)
+            ]
+            
+            for tx, ty in coords:
+                draw_diamond(tx, ty, size, color, diamond_rot)
+
+        # Draw status text
+        status_surface = self.font.render(f"Device: {self.active_device_name} | Sensitivity: {self.sensitivity:.1f}x", True, (200, 200, 200))
+        self.screen.blit(status_surface, (10, 10))
+        help_surface = self.font.render("Press LEFT/RIGHT: Device | F: Fullscreen | V: Visualizer | M: Menu", True, (150, 150, 150))
+        self.screen.blit(help_surface, (10, 30))
+
+    def draw_kaleidoscope_v2(self):
+        # Apply fade effect
+        self.screen.blit(self.fade_surface, (0, 0))
+        
+        # Center of the screen
+        cx, cy = self.width // 2, self.height // 2
+        
+        # Use more diamonds for a busier look, but smaller
+        num_diamonds = 24
+        resampled = np.zeros(num_diamonds)
+        chunk = BAR_COUNT // num_diamonds
+        for i in range(num_diamonds):
+            resampled[i] = np.mean(self.bars[i*chunk : (i+1)*chunk])
+            
+        max_dim = min(self.width, self.height) // 2
+        
+        for i, val in enumerate(resampled):
+            # Distance from center with slight oscillation and random phase
+            base_dist = (i + 1) * (max_dim / (num_diamonds + 1))
+            # Scale oscillation with screen size
+            dist_oscillation = (max_dim * 0.1) * np.sin(self.animation_time * self.random_speeds[i] + self.random_offsets[i])
+            dist = base_dist + dist_oscillation
+            
+            # Size based on audio value: more reactive and slightly larger range
+            # Scale base size with screen size (using max_dim as reference)
+            size = int(np.power(val, 0.6) * (max_dim * 0.3)) + 2
+            
+            # Color based on a slowly shifting global hue
+            # Global hue shifts through the rainbow over time
+            global_hue = (self.animation_time * 0.05) % 1.0
+            # Each diamond gets a small offset within a limited range (e.g., 0.1 of the color wheel)
+            hue_offset = (i / num_diamonds) * 0.1
+            hue = (global_hue + hue_offset) % 1.0
+            
+            # Add audio-reactive brightness to color
+            vibrancy = 127 + 128 * val
+            color = (
+                int(vibrancy * (0.5 + 0.5 * np.sin(hue * 2 * np.pi))),
+                int(vibrancy * (0.5 + 0.5 * np.sin(hue * 2 * np.pi + 2*np.pi/3))),
+                int(vibrancy * (0.5 + 0.5 * np.sin(hue * 2 * np.pi + 4*np.pi/3)))
+            )
+            
+            # Slowly rotating angle for the base triangle, with per-diamond random speed variation
+            rotation_speed = 0.5 * self.random_speeds[i]
+            angle = (i / num_diamonds) * (np.pi / 4) + (self.animation_time * rotation_speed) + self.random_offsets[i]
+            
+            # Base point with a tiny bit of random drift/jitter - scaled with screen size
+            bx = dist * np.cos(angle) + self.random_drift[i][0] * (max_dim * 0.05)
+            by = dist * np.sin(angle) + self.random_drift[i][1] * (max_dim * 0.05)
+            
+            # Diamond's own rotation
+            diamond_rot = self.animation_time * self.random_rot_speeds[i] + self.random_rot_offsets[i]
+            
+            def draw_diamond(x, y, s, c, rot):
+                # Points of a diamond centered at (0,0) before translation and rotation
+                # A diamond is basically a square rotated by 45 degrees, 
+                # but here we'll just rotate the 4 cardinal points.
+                base_points = [
                     (0, -s), (s, 0), (0, s), (-s, 0)
                 ]
                 
@@ -762,8 +920,9 @@ class Visualizer:
                     rx = px * cos_r - py * sin_r
                     ry = px * sin_r + py * cos_r
                     # Translate to final position relative to screen center
+                    #rotated_points.append((cx + x + rx, cy + y + ry))
                     rotated_points.append((cx + x + rx, cy + y + ry))
-                
+
                 pygame.draw.polygon(self.screen, c, rotated_points)
 
             # 8-way symmetry
