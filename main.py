@@ -5,7 +5,18 @@ import pygame.freetype
 import sys
 import threading
 import warnings
+import os
 import buttons
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 # Suppress SoundCard data discontinuity warnings
 try:
@@ -16,6 +27,7 @@ except AttributeError:
     pass
 
 # Constants
+VERSION = "1.0.0"
 WIDTH, HEIGHT = 800, 600
 FPS = 60
 FFT_SIZE = 2048
@@ -31,7 +43,7 @@ class Visualizer:
         self.width, self.height = WIDTH, HEIGHT
         self.fullscreen = False
         self.screen = pygame.display.set_mode((self.width, self.height), pygame.RESIZABLE)
-        pygame.display.set_caption("SoundCard Loopback Visualizer")
+        pygame.display.set_caption(f"SoundCard Loopback Visualizer v{VERSION}")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("Arial", 16)
         
