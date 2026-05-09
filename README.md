@@ -33,6 +33,12 @@ screenshots
 - **Interactive Device Switching**: Cycle through available audio output devices in real-time.
 - **Scrollable Control Menu**: A comprehensive UI to manage settings, sound sources, and visual styles.
 
+## 📦 Releases
+
+### Windows Release
+You can find the standalone Windows executable in the `dist` folder. This allows you to run the visualizer without needing Python installed.
+- **Download**: [PySoundVisualiser.exe](dist/PySoundVisualiser.exe) (v1.0.0)
+
 ## 📋 Requirements
 
 - **Operating System**: Windows 10/11 (Uses Windows-specific WASAPI)
@@ -61,6 +67,13 @@ Run the visualizer using Python:
 
 ```bash
 python main.py
+```
+
+### Building the release
+If you want to build the executable yourself, you'll need `pyinstaller`:
+```bash
+pip install pyinstaller
+pyinstaller --noconfirm --onefile --windowed --name "PySoundVisualiser" --add-data "assets;assets" --add-data "buttons.py;." main.py
 ```
 
 ### Controls

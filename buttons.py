@@ -2,6 +2,18 @@
 
 import pygame.freetype
 import math
+import os
+import sys
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 class Theme:
     def __init__(self, custom_colors=None):
@@ -806,7 +818,7 @@ class Background:
             self.image.fill((20, 20, 50))
         else:
             try:
-                self.image = pygame.image.load(image).convert_alpha()
+                self.image = pygame.image.load(resource_path(image)).convert_alpha()
             except (pygame.error, FileNotFoundError):
                 # Fallback to default if image file not found
                 self.image = pygame.Surface((100, 100))
